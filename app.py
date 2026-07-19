@@ -1,8 +1,23 @@
-# ==================== 强制离线（必须在所有 import 之前） ====================
+# ==================== 网络配置（必须在所有 import 之前） ====================
 import os
-os.environ['TRANSFORMERS_OFFLINE'] = '1'
-os.environ['HF_HUB_OFFLINE'] = '1'
+# 使用 Hugging Face 镜像加速（国内访问更快）
 os.environ['HF_ENDPOINT'] = 'https://hf-mirror.com'
+
+# ==================== 导入依赖库 ====================
+import streamlit as st
+import chromadb
+from sentence_transformers import SentenceTransformer
+from openai import OpenAI
+from dotenv import load_dotenv
+
+# ==================== 页面配置 ====================
+st.set_page_config(
+    page_title="DeepSeek 工具箱",
+    page_icon="🔧",
+    layout="wide"
+)
+
+# ... 其他代码保持不变 ...
 
 # ==================== 导入依赖库 ====================
 import streamlit as st
