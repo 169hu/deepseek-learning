@@ -177,13 +177,18 @@ client = OpenAI(
 # ==================== 使用缓存加载 RAG 组件 ====================
 @st.cache_resource
 def load_rag_components():
-    model = SentenceTransformer('all-MiniLM-L6-v2')
-    chroma_client = chromadb.PersistentClient(path="./chroma_db")
+    """加载 RAG 组件，失败时返回 (None, None) 不影响应用启动"""
     try:
+        # 使用更小更稳定的模型，减小下载压力
+        model = SentenceTransformer('paraphrase-MiniLM-L3-v2')
+        chroma_client = chromadb.PersistentClient(path="./chroma_db")
         collection = chroma_client.get_collection(name="my_docs")
-    except:
-        collection = None
-    return model, collection
+        return model, collection
+    except Exception as e:
+        # 加载失败时静默处理，返回 None
+        # 错误信息将在界面上通过 st.warning 显示
+        st.warning(f"⚠️ RAG 组件加载失败，知识库问答暂时不可用。其他功能正常。错误信息：{str(e)[:100]}...")
+        return None, None
 
 embed_model, collection = load_rag_components()
 
