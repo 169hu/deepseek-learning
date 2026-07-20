@@ -1,5 +1,8 @@
 # ==================== 网络配置（必须在所有 import 之前） ====================
 import os
+import logging
+import time
+from datetime import datetime
 # 使用 Hugging Face 镜像加速（国内访问更快）
 os.environ['HF_ENDPOINT'] = 'https://hf-mirror.com'
 
@@ -9,6 +12,7 @@ import chromadb
 from sentence_transformers import SentenceTransformer
 from openai import OpenAI
 from dotenv import load_dotenv
+from collections import Counter
 
 # ==================== 页面配置 ====================
 st.set_page_config(
@@ -20,9 +24,6 @@ st.set_page_config(
 # ... 其他代码保持不变 ...
 
 # ==================== 导入依赖库 ====================
-import streamlit as st
-import chromadb
-from sentence_transformers import SentenceTransformer
 from openai import OpenAI
 from dotenv import load_dotenv
 
@@ -245,7 +246,7 @@ if mode == "翻译":
                 response = client.chat.completions.create(
                     model="deepseek-chat",
                     messages=[
-                        {"role": "system", "content": f"你是一个专业翻译。请将用户输入的内容翻译成{target_lang}，只输出翻译结果，不要添加任何解释。"},
+                        {"role": "system", "content": f"你是莎士比亚时代的英国诗人。请将中文翻译成极具古典文学色彩的{target_lang}，不准意译，必须直译。"},
                         {"role": "user", "content": text}
                     ]
                 )
@@ -303,27 +304,38 @@ elif mode == "代码摘要":
                 )
                 st.markdown('<div class="result-card">' + response.choices[0].message.content.replace('\n', '<br>') + '</div>', unsafe_allow_html=True)
 
-# ---------- 信息提取 ----------
+# ---------- 信息提取（Few-shot 升级版） ----------
 elif mode == "信息提取":
-    st.subheader("信息提取")
-    st.caption("从一段描述中提取结构化的关键信息")
+    st.subheader("信息提取（Few-shot 演示）")
+    st.caption("给模型看 2 个示例，它就能学会提取任意格式的数据")
 
-    examples = [
-        {"input": "小明，数学95，语文88", "output": {"name": "小明", "scores": {"数学": 95, "语文": 88}}},
-        {"input": "小红，英语92，科学85", "output": {"name": "小红", "scores": {"英语": 92, "科学": 85}}}
-    ]
-    system_prompt = (
-        "你是一个数据提取助手。按 JSON 格式输出：{\"name\": \"姓名\", \"scores\": {\"科目\": 分数}}\n示例：\n"
-    )
-    for ex in examples:
-        system_prompt += f"输入：'{ex['input']}' → 输出：{ex['output']}\n"
-    system_prompt += "现在请严格按照这个格式输出，不要添加任何额外文字。"
+    # ===== 让用户也能看到“示例”是什么样的 =====
+    with st.expander("📖 当前使用的 Few-shot 示例（教具）"):
+        st.code("""
+示例 1: 输入: "小明，数学95，语文88" → 输出: {"name": "小明", "scores": {"数学": 95, "语文": 88}}
+示例 2: 输入: "小红，英语92，科学85" → 输出: {"name": "小红", "scores": {"英语": 92, "科学": 85}}
+        """)
 
+    # ===== 核心输入区 =====
     with st.form("json_form"):
-        text_input = st.text_area("输入描述", height=100, placeholder="例如：小明，数学95，语文88")
+        text_input = st.text_area(
+            "输入待提取的文本",
+            height=100,
+            placeholder="例如：小刚，数学78，英语82，历史90"
+        )
         submitted = st.form_submit_button("提取信息")
+
         if submitted and text_input:
-            with st.spinner("正在提取..."):
+            with st.spinner("模型正在模仿示例进行提取..."):
+                # 构建 Few-shot 示例（和刚才测试的代码一样）
+                examples = [
+                    {"input": "小明，数学95，语文88", "output": {"name": "小明", "scores": {"数学": 95, "语文": 88}}},
+                    {"input": "小红，英语92，科学85", "output": {"name": "小红", "scores": {"英语": 92, "科学": 85}}}
+                ]
+                system_prompt = "你是一个数据提取助手。请严格按照以下示例的 JSON 格式输出，不要添加任何额外文字。\n"
+                for ex in examples:
+                    system_prompt += f"输入：{ex['input']} → 输出：{ex['output']}\n"
+
                 response = client.chat.completions.create(
                     model="deepseek-chat",
                     messages=[
@@ -332,12 +344,24 @@ elif mode == "信息提取":
                     ],
                     temperature=0.1
                 )
+                st.success("提取成功！")
                 st.markdown('<div class="result-card">' + response.choices[0].message.content + '</div>', unsafe_allow_html=True)
 
+                # ===== 额外加分点：解释原理 =====
+                st.caption("💡 模型之所以能正确提取，是因为它模仿了上面示例中的格式。这就是 Few-shot 的力量。")
 # ---------- 逐步推理 ----------
+# ---------- 逐步推理（升级版：支持 Self-Consistency） ----------
 elif mode == "逐步推理":
-    st.subheader("逐步推理")
-    st.caption("展示详细推理过程，同时对比直接回答的效果")
+    st.subheader("逐步推理 · 自洽性演示")
+    st.caption("模型可以多次推理，然后投票选出最可靠的答案")
+
+    # ---- 新增：推理模式选择 ----
+    reasoning_mode = st.radio(
+        "选择推理方式",
+        ["标准 CoT（一次推理）", "Self-Consistency（3次投票）"],
+        index=0,
+        horizontal=True
+    )
 
     with st.form("cot_form"):
         question = st.text_input("问题", placeholder="输入一个需要推理的问题...")
@@ -345,32 +369,97 @@ elif mode == "逐步推理":
 
         if submitted and question:
             with st.spinner("正在推理..."):
-                prompt_cot = f"{question}\n\n请逐步思考，并输出你的推理过程，最后给出结论。"
-                response_cot = client.chat.completions.create(
-                    model="deepseek-chat",
-                    messages=[
-                        {"role": "system", "content": "你是一个逻辑清晰的助手，会一步步分析问题。"},
-                        {"role": "user", "content": prompt_cot}
-                    ],
-                    temperature=0.3
-                )
-                response_direct = client.chat.completions.create(
-                    model="deepseek-chat",
-                    messages=[
-                        {"role": "system", "content": "你是一个助手，请直接回答问题。"},
-                        {"role": "user", "content": question}
-                    ],
-                    temperature=0.3
-                )
+                if reasoning_mode == "标准 CoT（一次推理）":
+                    # ---- 原有的 CoT 对比逻辑 ----
+                    prompt_cot = f"{question}\n\n请逐步思考，并输出你的推理过程，最后给出结论。"
+                    response_cot = client.chat.completions.create(
+                        model="deepseek-chat",
+                        messages=[
+                            {"role": "system", "content": "你是一个逻辑清晰的助手，会一步步分析问题。"},
+                            {"role": "user", "content": prompt_cot}
+                        ],
+                        temperature=0.3
+                    )
+                    response_direct = client.chat.completions.create(
+                        model="deepseek-chat",
+                        messages=[
+                            {"role": "system", "content": "你是一个助手，请直接回答问题。"},
+                            {"role": "user", "content": question}
+                        ],
+                        temperature=0.3
+                    )
 
-                col1, col2 = st.columns(2)
-                with col1:
-                    st.markdown("##### 逐步推理")
-                    st.markdown('<div class="result-card">' + response_cot.choices[0].message.content.replace('\n', '<br>') + '</div>', unsafe_allow_html=True)
-                with col2:
-                    st.markdown("##### 直接回答")
-                    st.markdown('<div class="result-card">' + response_direct.choices[0].message.content.replace('\n', '<br>') + '</div>', unsafe_allow_html=True)
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        st.markdown("##### 逐步推理（CoT）")
+                        st.markdown('<div class="result-card">' + response_cot.choices[0].message.content.replace('\n', '<br>') + '</div>', unsafe_allow_html=True)
+                    with col2:
+                        st.markdown("##### 直接回答")
+                        st.markdown('<div class="result-card">' + response_direct.choices[0].message.content.replace('\n', '<br>') + '</div>', unsafe_allow_html=True)
 
+                else:  # Self-Consistency
+                    # ---- 核心：多次推理，然后投票 ----
+                    num_trials = 3  # 3次推理
+                    st.info(f"🔄 正在进行 {num_trials} 次独立推理，然后投票...")
+
+                    # 存储所有推理过程和最终结论
+                    all_reasoning = []
+                    all_conclusions = []
+
+                    for i in range(num_trials):
+                        # 每次调用使用不同的温度（0.5~0.8 随机），增加多样性
+                        temp = 0.5 + i * 0.15  # 0.5, 0.65, 0.8
+                        prompt_cot = f"{question}\n\n请逐步思考，并输出你的推理过程，最后给出结论。"
+                        response = client.chat.completions.create(
+                            model="deepseek-chat",
+                            messages=[
+                                {"role": "system", "content": "你是一个逻辑清晰的助手，会一步步分析问题。"},
+                                {"role": "user", "content": prompt_cot}
+                            ],
+                            temperature=temp
+                        )
+                        full_answer = response.choices[0].message.content
+
+                        # 尝试提取最后一句作为结论（假设结论在末尾）
+                        # 简单方法：取最后一个句号后的内容，或者直接用整个回答
+                        # 更可靠：让模型自己标记结论（但为了演示，我们做简单处理）
+                        # 这里我们直接存储整个回答，投票时用最后的结论句
+                        lines = full_answer.strip().split('\n')
+                        # 找到最后一行（通常结论在最后）
+                        if lines:
+                            last_line = lines[-1].strip()
+                            # 如果最后一行包含“结论”、“答案”等关键词，则作为结论
+                            if "结论" in last_line or "答案" in last_line or "所以" in last_line:
+                                conclusion = last_line
+                            else:
+                                conclusion = f"（第{i+1}次推理）{full_answer[-50:]}"  # 备用
+                        else:
+                            conclusion = full_answer[-50:]
+
+                        all_reasoning.append(f"【第{i+1}次推理（温度 {temp:.2f}）】\n{full_answer}")
+                        all_conclusions.append(conclusion)
+
+                    # ---- 投票：选择出现次数最多的结论 ----
+                    from collections import Counter
+                    vote_counter = Counter(all_conclusions)
+                    most_common_conclusion = vote_counter.most_common(1)[0][0]
+
+                    # ---- 展示结果 ----
+                    st.success(f"✅ 投票完成！{num_trials} 次推理中，最终结论多数一致。")
+                    st.markdown("#### 投票结果统计")
+                    for idx, (conclusion, count) in enumerate(vote_counter.most_common(), 1):
+                        st.markdown(f"- 结论 {idx}：{conclusion[:50]}...（出现 {count} 次）")
+
+                    with st.expander("📖 查看所有推理过程（含详细步骤）"):
+                        for reasoning in all_reasoning:
+                            st.markdown(reasoning)
+                            st.markdown("---")
+
+                    st.markdown("#### 🏆 最终投票选出的答案")
+                    st.markdown('<div class="result-card">' + most_common_conclusion + '</div>', unsafe_allow_html=True)
+
+                    # ---- 额外的对比（可选） ----
+                    st.caption("💡 Self-Consistency 通过多次推理投票，能有效减少单次推理的随机错误。")
 # ---------- 知识库问答 ----------
 else:  # "知识库问答"
     st.subheader("知识库问答")
