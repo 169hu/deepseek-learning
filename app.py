@@ -178,17 +178,13 @@ client = OpenAI(
 # ==================== 使用缓存加载 RAG 组件 ====================
 @st.cache_resource
 def load_rag_components():
-    """加载 RAG 组件，失败时返回 (None, None) 不影响应用启动"""
     try:
-        # 使用更小更稳定的模型，减小下载压力
         model = SentenceTransformer('paraphrase-MiniLM-L3-v2')
         chroma_client = chromadb.PersistentClient(path="./chroma_db")
-        collection = chroma_client.get_collection(name="my_docs")
+        collection = chroma_client.get_collection(name="my_docs_parent")   # ← 改成父文档集合
         return model, collection
     except Exception as e:
-        # 加载失败时静默处理，返回 None
-        # 错误信息将在界面上通过 st.warning 显示
-        st.warning(f"⚠️ RAG 组件加载失败，知识库问答暂时不可用。其他功能正常。错误信息：{str(e)[:100]}...")
+        st.warning(f"⚠️ RAG 组件加载失败...")
         return None, None
 
 embed_model, collection = load_rag_components()
@@ -460,60 +456,63 @@ elif mode == "逐步推理":
 
                     # ---- 额外的对比（可选） ----
                     st.caption("💡 Self-Consistency 通过多次推理投票，能有效减少单次推理的随机错误。")
-# ---------- 知识库问答 ----------
+# ---------- 知识库问答（LangChain 版） ----------
 else:  # "知识库问答"
-    st.subheader("知识库问答")
-    st.caption("基于本地文档内容回答你的问题")
+    st.subheader("知识库问答 · LangChain 版")
+    st.caption("使用 LangChain 框架构建的 RAG 问答系统")
 
     if collection is None:
         st.warning("向量库尚未初始化，请先运行 `rag_retriever.py` 导入文档数据。", icon="⚠️")
     else:
-        with st.form("rag_form"):
+        from langchain_chroma import Chroma
+        from langchain_community.embeddings import HuggingFaceEmbeddings
+        from langchain_openai import ChatOpenAI
+        from langchain_core.prompts import PromptTemplate
+        from langchain_classic.chains import RetrievalQA
+
+        # 加载 LangChain 组件
+        embedding_model = HuggingFaceEmbeddings(model_name="paraphrase-MiniLM-L3-v2")
+        vectorstore = Chroma(
+            persist_directory="./chroma_db",
+            embedding_function=embedding_model,
+            collection_name="my_docs_parent"
+        )
+        retriever = vectorstore.as_retriever(search_kwargs={"k": 3})
+        llm = ChatOpenAI(
+            model="deepseek-chat",
+            temperature=0.3,
+            openai_api_key=os.getenv("DEEPSEEK_API_KEY"),
+            openai_api_base="https://api.deepseek.com"
+        )
+        template = """你是一个知识库问答助手。请根据【参考内容】回答用户的问题。
+规则：
+1. 如果参考内容中有相关信息，请基于这些信息给出准确、简洁的回答。
+2. 如果参考内容中没有相关信息，请明确回答「根据现有资料无法回答」。
+3. 不要编造参考内容之外的信息。
+
+参考内容：
+{context}
+
+用户问题：
+{question}
+"""
+        prompt = PromptTemplate(template=template, input_variables=["context", "question"])
+        qa_chain = RetrievalQA.from_chain_type(
+            llm=llm,
+            chain_type="stuff",
+            retriever=retriever,
+            return_source_documents=True,
+            chain_type_kwargs={"prompt": prompt}
+        )
+
+        with st.form("rag_form_langchain"):
             question = st.text_input("问题", placeholder="基于本地文档提问...")
             submitted = st.form_submit_button("提问")
-
             if submitted and question:
-                with st.spinner("正在检索并生成回答..."):
-                    query_embedding = embed_model.encode([question])
-                    results = collection.query(
-                        query_embeddings=query_embedding.tolist(),
-                        n_results=3
-                    )
-                    retrieved_docs = results['documents'][0]
-
-                    if not retrieved_docs:
-                        st.info("知识库中没有找到相关信息。")
-                    else:
-                        context = "\n---\n".join(retrieved_docs)
-                        system_prompt = (
-                            "你是一个知识库问答助手。请根据【参考内容】回答用户的问题。\n"
-                            "规则：\n"
-                            "1. 如果参考内容中有相关信息，请基于这些信息给出准确、简洁的回答。\n"
-                            "2. 如果参考内容中没有相关信息，请明确回答「根据现有资料无法回答」。\n"
-                            "3. 不要编造参考内容之外的信息。"
-                        )
-                        user_prompt = f"【参考内容】\n{context}\n\n【用户问题】\n{question}"
-
-                        response = client.chat.completions.create(
-                            model="deepseek-chat",
-                            messages=[
-                                {"role": "system", "content": system_prompt},
-                                {"role": "user", "content": user_prompt}
-                            ],
-                            temperature=0.3
-                        )
-
-                        col1, col2 = st.columns(2)
-                        with col1:
-                            st.markdown("##### 参考来源")
-                            for i, doc in enumerate(retrieved_docs, 1):
-                                with st.container():
-                                    st.markdown(f"""
-                                    <div style="background:#f1f5f9; border-left:3px solid #818cf8; border-radius:6px; padding:0.7rem 1rem; margin:0.5rem 0; font-size:0.85rem; color:#475569; line-height:1.6;">
-                                        <span style="font-weight:600; color:#4f46e5;">片段 {i}</span><br>
-                                        {doc}
-                                    </div>
-                                    """, unsafe_allow_html=True)
-                        with col2:
-                            st.markdown("##### 回答")
-                            st.markdown('<div class="result-card">' + response.choices[0].message.content.replace('\n', '<br>') + '</div>', unsafe_allow_html=True)
+                with st.spinner("LangChain 正在检索并生成回答..."):
+                    result = qa_chain.invoke({"query": question})
+                    st.success("回答：")
+                    st.write(result["result"])
+                    with st.expander("📖 查看参考来源"):
+                        for i, doc in enumerate(result["source_documents"], 1):
+                            st.info(f"片段 {i}：{doc.page_content[:150]}...")
