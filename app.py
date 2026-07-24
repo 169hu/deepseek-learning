@@ -1,31 +1,15 @@
 # ==================== 网络配置（必须在所有 import 之前） ====================
 import os
-import logging
-import time
-from datetime import datetime
-# 使用 Hugging Face 镜像加速（国内访问更快）
 os.environ['HF_ENDPOINT'] = 'https://hf-mirror.com'
 
 # ==================== 导入依赖库 ====================
+import json
 import streamlit as st
 import chromadb
 from sentence_transformers import SentenceTransformer
 from openai import OpenAI
 from dotenv import load_dotenv
 from collections import Counter
-
-# ==================== 页面配置 ====================
-st.set_page_config(
-    page_title="DeepSeek 工具箱",
-    page_icon="🔧",
-    layout="wide"
-)
-
-# ... 其他代码保持不变 ...
-
-# ==================== 导入依赖库 ====================
-from openai import OpenAI
-from dotenv import load_dotenv
 
 # ==================== 页面配置 ====================
 st.set_page_config(
@@ -44,7 +28,6 @@ st.markdown("""
         font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
     }
 
-    /* 隐藏默认页脚和顶部空白 */
     footer {visibility: hidden;}
     header {visibility: hidden;}
     .stApp {margin-top: -60px;}
@@ -154,16 +137,26 @@ st.markdown("""
         margin: 1.5rem 0 !important;
     }
 
-    /* --- 标签 --- */
-    .tag {
-        display: inline-block;
-        background: #eef2ff;
+    /* --- 参考来源卡片 --- */
+    .source-card {
+        background: #f1f5f9;
+        border-left: 3px solid #818cf8;
+        border-radius: 6px;
+        padding: 0.7rem 1rem;
+        margin: 0.5rem 0;
+        font-size: 0.85rem;
+        color: #475569;
+        line-height: 1.6;
+    }
+    .source-label {
+        font-weight: 600;
         color: #4f46e5;
-        padding: 0.2rem 0.7rem;
-        border-radius: 20px;
-        font-size: 0.78rem;
-        font-weight: 500;
-        margin-right: 0.4rem;
+    }
+
+    /* --- expander 美化 --- */
+    .streamlit-expanderHeader {
+        font-weight: 600;
+        font-size: 0.9rem;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -181,10 +174,9 @@ def load_rag_components():
     try:
         model = SentenceTransformer('paraphrase-MiniLM-L3-v2')
         chroma_client = chromadb.PersistentClient(path="./chroma_db")
-        collection = chroma_client.get_collection(name="my_docs_parent")   # ← 改成父文档集合
+        collection = chroma_client.get_collection(name="my_docs_parent")
         return model, collection
-    except Exception as e:
-        st.warning(f"⚠️ RAG 组件加载失败...")
+    except Exception:
         return None, None
 
 embed_model, collection = load_rag_components()
@@ -194,13 +186,13 @@ with st.sidebar:
     st.markdown("""
     <div style="text-align:center; padding: 1rem 0 1.5rem 0;">
         <div style="font-size: 1.3rem; font-weight: 700; color: #e0e0e0;">DeepSeek 工具箱</div>
-        <div style="font-size: 0.8rem; color: #94a3b8; margin-top: 0.2rem;">六个实用功能，一个入口</div>
+        <div style="font-size: 0.8rem; color: #94a3b8; margin-top: 0.2rem;">九个实用功能，一个入口</div>
     </div>
     """, unsafe_allow_html=True)
 
     mode = st.radio(
         "选择功能",
-        ["翻译", "对话", "代码摘要", "信息提取", "逐步推理", "知识库问答"],
+        ["翻译", "对话", "代码摘要", "信息提取", "逐步推理", "知识库问答", "周报生成器", "天气查询", "ReAct 智能助手"],
         label_visibility="collapsed"
     )
 
@@ -215,7 +207,7 @@ with st.sidebar:
 
 # ==================== 主界面标题 ====================
 st.markdown('<div class="main-title">DeepSeek 工具箱</div>', unsafe_allow_html=True)
-st.markdown('<div class="main-subtitle">翻译 · 对话 · 代码摘要 · 信息提取 · 逐步推理 · 知识库问答</div>', unsafe_allow_html=True)
+st.markdown('<div class="main-subtitle">翻译 · 对话 · 代码摘要 · 信息提取 · 逐步推理 · 知识库问答 · 周报生成 · 天气查询 · ReAct 助手</div>', unsafe_allow_html=True)
 st.markdown("---")
 
 # ==================== 各模式功能实现 ====================
@@ -224,7 +216,6 @@ st.markdown("---")
 if mode == "翻译":
     st.subheader("文本翻译")
 
-    # 语言选择
     col_lang, _ = st.columns([1, 3])
     with col_lang:
         target_lang = st.selectbox(
@@ -242,7 +233,7 @@ if mode == "翻译":
                 response = client.chat.completions.create(
                     model="deepseek-chat",
                     messages=[
-                        {"role": "system", "content": f"你是莎士比亚时代的英国诗人。请将中文翻译成极具古典文学色彩的{target_lang}，不准意译，必须直译。"},
+                        {"role": "system", "content": f"你是一个专业翻译。请将用户输入的内容翻译成{target_lang}，只输出翻译结果，不要添加任何解释。"},
                         {"role": "user", "content": text}
                     ]
                 )
@@ -255,7 +246,6 @@ elif mode == "对话":
     if "chat_history" not in st.session_state:
         st.session_state.chat_history = []
 
-    # 清空按钮
     if st.session_state.chat_history:
         if st.button("清空对话", type="secondary"):
             st.session_state.chat_history = []
@@ -300,19 +290,17 @@ elif mode == "代码摘要":
                 )
                 st.markdown('<div class="result-card">' + response.choices[0].message.content.replace('\n', '<br>') + '</div>', unsafe_allow_html=True)
 
-# ---------- 信息提取（Few-shot 升级版） ----------
+# ---------- 信息提取 ----------
 elif mode == "信息提取":
-    st.subheader("信息提取（Few-shot 演示）")
+    st.subheader("信息提取 · Few-shot 演示")
     st.caption("给模型看 2 个示例，它就能学会提取任意格式的数据")
 
-    # ===== 让用户也能看到“示例”是什么样的 =====
-    with st.expander("📖 当前使用的 Few-shot 示例（教具）"):
+    with st.expander("当前使用的 Few-shot 示例"):
         st.code("""
 示例 1: 输入: "小明，数学95，语文88" → 输出: {"name": "小明", "scores": {"数学": 95, "语文": 88}}
 示例 2: 输入: "小红，英语92，科学85" → 输出: {"name": "小红", "scores": {"英语": 92, "科学": 85}}
         """)
 
-    # ===== 核心输入区 =====
     with st.form("json_form"):
         text_input = st.text_area(
             "输入待提取的文本",
@@ -322,8 +310,7 @@ elif mode == "信息提取":
         submitted = st.form_submit_button("提取信息")
 
         if submitted and text_input:
-            with st.spinner("模型正在模仿示例进行提取..."):
-                # 构建 Few-shot 示例（和刚才测试的代码一样）
+            with st.spinner("正在提取..."):
                 examples = [
                     {"input": "小明，数学95，语文88", "output": {"name": "小明", "scores": {"数学": 95, "语文": 88}}},
                     {"input": "小红，英语92，科学85", "output": {"name": "小红", "scores": {"英语": 92, "科学": 85}}}
@@ -342,16 +329,13 @@ elif mode == "信息提取":
                 )
                 st.success("提取成功！")
                 st.markdown('<div class="result-card">' + response.choices[0].message.content + '</div>', unsafe_allow_html=True)
+                st.caption("模型之所以能正确提取，是因为它模仿了上面示例中的格式。这就是 Few-shot 的力量。")
 
-                # ===== 额外加分点：解释原理 =====
-                st.caption("💡 模型之所以能正确提取，是因为它模仿了上面示例中的格式。这就是 Few-shot 的力量。")
 # ---------- 逐步推理 ----------
-# ---------- 逐步推理（升级版：支持 Self-Consistency） ----------
 elif mode == "逐步推理":
     st.subheader("逐步推理 · 自洽性演示")
     st.caption("模型可以多次推理，然后投票选出最可靠的答案")
 
-    # ---- 新增：推理模式选择 ----
     reasoning_mode = st.radio(
         "选择推理方式",
         ["标准 CoT（一次推理）", "Self-Consistency（3次投票）"],
@@ -366,7 +350,6 @@ elif mode == "逐步推理":
         if submitted and question:
             with st.spinner("正在推理..."):
                 if reasoning_mode == "标准 CoT（一次推理）":
-                    # ---- 原有的 CoT 对比逻辑 ----
                     prompt_cot = f"{question}\n\n请逐步思考，并输出你的推理过程，最后给出结论。"
                     response_cot = client.chat.completions.create(
                         model="deepseek-chat",
@@ -393,18 +376,15 @@ elif mode == "逐步推理":
                         st.markdown("##### 直接回答")
                         st.markdown('<div class="result-card">' + response_direct.choices[0].message.content.replace('\n', '<br>') + '</div>', unsafe_allow_html=True)
 
-                else:  # Self-Consistency
-                    # ---- 核心：多次推理，然后投票 ----
-                    num_trials = 3  # 3次推理
-                    st.info(f"🔄 正在进行 {num_trials} 次独立推理，然后投票...")
+                else:
+                    num_trials = 3
+                    st.info(f"正在进行 {num_trials} 次独立推理，然后投票...")
 
-                    # 存储所有推理过程和最终结论
                     all_reasoning = []
                     all_conclusions = []
 
                     for i in range(num_trials):
-                        # 每次调用使用不同的温度（0.5~0.8 随机），增加多样性
-                        temp = 0.5 + i * 0.15  # 0.5, 0.65, 0.8
+                        temp = 0.5 + i * 0.15
                         prompt_cot = f"{question}\n\n请逐步思考，并输出你的推理过程，最后给出结论。"
                         response = client.chat.completions.create(
                             model="deepseek-chat",
@@ -416,74 +396,70 @@ elif mode == "逐步推理":
                         )
                         full_answer = response.choices[0].message.content
 
-                        # 尝试提取最后一句作为结论（假设结论在末尾）
-                        # 简单方法：取最后一个句号后的内容，或者直接用整个回答
-                        # 更可靠：让模型自己标记结论（但为了演示，我们做简单处理）
-                        # 这里我们直接存储整个回答，投票时用最后的结论句
                         lines = full_answer.strip().split('\n')
-                        # 找到最后一行（通常结论在最后）
                         if lines:
                             last_line = lines[-1].strip()
-                            # 如果最后一行包含“结论”、“答案”等关键词，则作为结论
                             if "结论" in last_line or "答案" in last_line or "所以" in last_line:
                                 conclusion = last_line
                             else:
-                                conclusion = f"（第{i+1}次推理）{full_answer[-50:]}"  # 备用
+                                conclusion = f"（第{i+1}次推理）{full_answer[-50:]}"
                         else:
                             conclusion = full_answer[-50:]
 
                         all_reasoning.append(f"【第{i+1}次推理（温度 {temp:.2f}）】\n{full_answer}")
                         all_conclusions.append(conclusion)
 
-                    # ---- 投票：选择出现次数最多的结论 ----
-                    from collections import Counter
                     vote_counter = Counter(all_conclusions)
                     most_common_conclusion = vote_counter.most_common(1)[0][0]
 
-                    # ---- 展示结果 ----
-                    st.success(f"✅ 投票完成！{num_trials} 次推理中，最终结论多数一致。")
-                    st.markdown("#### 投票结果统计")
+                    st.success(f"投票完成！{num_trials} 次推理中，最终结论多数一致。")
+                    st.markdown("##### 投票结果统计")
                     for idx, (conclusion, count) in enumerate(vote_counter.most_common(), 1):
                         st.markdown(f"- 结论 {idx}：{conclusion[:50]}...（出现 {count} 次）")
 
-                    with st.expander("📖 查看所有推理过程（含详细步骤）"):
+                    with st.expander("查看所有推理过程"):
                         for reasoning in all_reasoning:
                             st.markdown(reasoning)
                             st.markdown("---")
 
-                    st.markdown("#### 🏆 最终投票选出的答案")
+                    st.markdown("##### 最终投票选出的答案")
                     st.markdown('<div class="result-card">' + most_common_conclusion + '</div>', unsafe_allow_html=True)
+                    st.caption("Self-Consistency 通过多次推理投票，能有效减少单次推理的随机错误。")
 
-                    # ---- 额外的对比（可选） ----
-                    st.caption("💡 Self-Consistency 通过多次推理投票，能有效减少单次推理的随机错误。")
-# ---------- 知识库问答（LangChain 版） ----------
-else:  # "知识库问答"
+# ---------- 知识库问答 ----------
+elif mode == "知识库问答":
     st.subheader("知识库问答 · LangChain 版")
     st.caption("使用 LangChain 框架构建的 RAG 问答系统")
 
-    if collection is None:
-        st.warning("向量库尚未初始化，请先运行 `rag_retriever.py` 导入文档数据。", icon="⚠️")
-    else:
+    @st.cache_resource
+    def load_langchain_rag():
         from langchain_chroma import Chroma
         from langchain_community.embeddings import HuggingFaceEmbeddings
         from langchain_openai import ChatOpenAI
         from langchain_core.prompts import PromptTemplate
         from langchain_classic.chains import RetrievalQA
 
-        # 加载 LangChain 组件
-        embedding_model = HuggingFaceEmbeddings(model_name="paraphrase-MiniLM-L3-v2")
+        embedding_model = HuggingFaceEmbeddings(
+            model_name="paraphrase-MiniLM-L3-v2",
+            model_kwargs={'device': 'cpu'},
+            encode_kwargs={'normalize_embeddings': True}
+        )
+
         vectorstore = Chroma(
             persist_directory="./chroma_db",
             embedding_function=embedding_model,
             collection_name="my_docs_parent"
         )
+
         retriever = vectorstore.as_retriever(search_kwargs={"k": 3})
+
         llm = ChatOpenAI(
             model="deepseek-chat",
             temperature=0.3,
             openai_api_key=os.getenv("DEEPSEEK_API_KEY"),
             openai_api_base="https://api.deepseek.com"
         )
+
         template = """你是一个知识库问答助手。请根据【参考内容】回答用户的问题。
 规则：
 1. 如果参考内容中有相关信息，请基于这些信息给出准确、简洁的回答。
@@ -497,6 +473,7 @@ else:  # "知识库问答"
 {question}
 """
         prompt = PromptTemplate(template=template, input_variables=["context", "question"])
+
         qa_chain = RetrievalQA.from_chain_type(
             llm=llm,
             chain_type="stuff",
@@ -505,14 +482,283 @@ else:  # "知识库问答"
             chain_type_kwargs={"prompt": prompt}
         )
 
+        return qa_chain
+
+    try:
+        qa_chain = load_langchain_rag()
+        vector_available = True
+    except Exception as e:
+        vector_available = False
+        st.warning(f"向量库加载失败，请先运行 rag_retriever.py 导入文档数据。")
+
+    if vector_available:
         with st.form("rag_form_langchain"):
             question = st.text_input("问题", placeholder="基于本地文档提问...")
             submitted = st.form_submit_button("提问")
+
             if submitted and question:
-                with st.spinner("LangChain 正在检索并生成回答..."):
-                    result = qa_chain.invoke({"query": question})
-                    st.success("回答：")
-                    st.write(result["result"])
-                    with st.expander("📖 查看参考来源"):
-                        for i, doc in enumerate(result["source_documents"], 1):
-                            st.info(f"片段 {i}：{doc.page_content[:150]}...")
+                with st.spinner("正在检索并生成回答..."):
+                    try:
+                        result = qa_chain.invoke({"query": question})
+
+                        col1, col2 = st.columns(2)
+                        with col1:
+                            st.markdown("##### 参考来源")
+                            for i, doc in enumerate(result["source_documents"], 1):
+                                with st.container():
+                                    st.markdown(f"""
+                                    <div class="source-card">
+                                        <span class="source-label">片段 {i}</span><br>
+                                        {doc.page_content[:150]}...
+                                    </div>
+                                    """, unsafe_allow_html=True)
+                        with col2:
+                            st.markdown("##### 回答")
+                            st.markdown('<div class="result-card">' + result["result"].replace('\n', '<br>') + '</div>', unsafe_allow_html=True)
+
+                    except Exception as e:
+                        st.error(f"生成回答失败：{str(e)}")
+    else:
+        st.info("请先运行 rag_retriever.py 构建向量库，再使用此功能。")
+
+# ---------- 周报生成器 ----------
+elif mode == "周报生成器":
+    st.subheader("周报生成器")
+    st.caption("输入你本周的工作内容，帮你生成结构化周报")
+
+    with st.form("weekly_report_form"):
+        work_content = st.text_area(
+            "本周工作内容",
+            height=150,
+            placeholder="例如：修复了登录页面的Bug，优化了数据库查询速度，参加了需求评审会..."
+        )
+        submitted = st.form_submit_button("生成周报")
+
+        if submitted and work_content:
+            with st.spinner("正在整理..."):
+                response = client.chat.completions.create(
+                    model="deepseek-chat",
+                    messages=[
+                        {"role": "system", "content": "你是一个专业的职场助理。请根据用户输入的工作内容，生成一份结构清晰的周报。格式必须包含：## 本周完成、## 下周计划、## 遇到的困难 这三个部分，使用 Markdown 格式。"},
+                        {"role": "user", "content": work_content}
+                    ],
+                    temperature=0.5
+                )
+                report = response.choices[0].message.content
+                st.success("周报生成完毕")
+                st.markdown(report)
+
+# ---------- 天气查询 ----------
+elif mode == "天气查询":
+    st.subheader("天气查询")
+    st.caption("输入城市名称，查询当前天气情况")
+
+    def get_current_weather(location):
+        weather_db = {
+            "上海": "28°C，多云转阴，东南风3级",
+            "北京": "32°C，晴，空气质量良",
+            "深圳": "30°C，雷阵雨，注意带伞",
+            "成都": "26°C，阴天，湿度较大",
+            "广州": "31°C，多云，微风"
+        }
+        return weather_db.get(location, f"{location}：20°C，晴（模拟数据）")
+
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "get_current_weather",
+                "description": "查询指定地点的当前天气情况",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "location": {
+                            "type": "string",
+                            "description": "城市名称，例如：上海、北京"
+                        }
+                    },
+                    "required": ["location"]
+                }
+            }
+        }
+    ]
+
+    def run_weather_agent(user_query):
+        response = client.chat.completions.create(
+            model="deepseek-chat",
+            messages=[{"role": "user", "content": user_query}],
+            tools=tools,
+            tool_choice="auto"
+        )
+
+        message = response.choices[0].message
+
+        if message.tool_calls:
+            tool_call = message.tool_calls[0]
+            function_name = tool_call.function.name
+            arguments = json.loads(tool_call.function.arguments)
+
+            if function_name == "get_current_weather":
+                result = get_current_weather(arguments["location"])
+
+            second_response = client.chat.completions.create(
+                model="deepseek-chat",
+                messages=[
+                    {"role": "user", "content": user_query},
+                    message,
+                    {
+                        "role": "tool",
+                        "tool_call_id": tool_call.id,
+                        "content": result
+                    }
+                ]
+            )
+            return second_response.choices[0].message.content
+        else:
+            return message.content
+
+    with st.form("weather_form"):
+        query = st.text_input("天气查询", placeholder="例如：上海今天天气怎么样？")
+        submitted = st.form_submit_button("查询")
+
+        if submitted and query:
+            with st.spinner("正在查询..."):
+                try:
+                    answer = run_weather_agent(query)
+                    st.success("查询完成")
+                    st.markdown('<div class="result-card">' + answer.replace('\n', '<br>') + '</div>', unsafe_allow_html=True)
+                except Exception as e:
+                    st.error(f"出错了：{str(e)}")
+# ---------- ReAct 智能助手 ----------
+elif mode == "ReAct 智能助手":
+    st.subheader("ReAct 智能助手")
+    st.caption("支持多工具、多步推理，自主规划完成任务（演示：天气 + 汇率）")
+
+
+    # --- 1. 工具函数 (与 react_agent.py 保持一致) ---
+    def get_current_weather(location):
+        weather_db = {
+            "上海": "28°C，多云转阴，东南风3级",
+            "北京": "32°C，晴，空气质量良",
+            "深圳": "30°C，雷阵雨，注意带伞",
+            "成都": "26°C，阴天，湿度较大",
+            "广州": "31°C，多云，微风"
+        }
+        return weather_db.get(location, f"{location}：20°C，晴（模拟数据）")
+
+
+    def get_exchange_rate(from_currency, to_currency):
+        rates = {
+            ("人民币", "美元"): 0.14,
+            ("美元", "人民币"): 7.15,
+            ("人民币", "日元"): 20.50,
+            ("日元", "人民币"): 0.049,
+            ("人民币", "欧元"): 0.13,
+            ("欧元", "人民币"): 7.70,
+        }
+        return rates.get((from_currency, to_currency), 0.00)
+
+
+    # --- 2. 工具描述 (tools) ---
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "get_current_weather",
+                "description": "查询指定地点的当前天气情况",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "location": {"type": "string", "description": "城市名称，例如：上海、北京"}
+                    },
+                    "required": ["location"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "get_exchange_rate",
+                "description": "查询两种货币之间的汇率",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "from_currency": {"type": "string", "description": "源货币代码，例如：人民币、美元"},
+                        "to_currency": {"type": "string", "description": "目标货币代码，例如：人民币、美元"}
+                    },
+                    "required": ["from_currency", "to_currency"]
+                }
+            }
+        }
+    ]
+
+
+    # --- 3. ReAct Agent 执行逻辑 ---
+    def run_react_agent(user_query, max_steps=3):
+        messages = [{"role": "user", "content": user_query}]
+        step_count = 0
+        final_answer = "抱歉，任务未能完成。"
+
+        # 用 Streamlit 的容器来显示推理过程
+        reasoning_placeholder = st.empty()
+        full_reasoning = ""
+
+        with st.spinner("Agent 正在思考并行动..."):
+            while step_count < max_steps:
+                step_count += 1
+                response = client.chat.completions.create(
+                    model="deepseek-chat",
+                    messages=messages,
+                    tools=tools,
+                    tool_choice="auto"
+                )
+
+                message = response.choices[0].message
+                messages.append(message)  # 保存助手消息
+
+                # 检查是否有工具调用
+                if message.tool_calls:
+                    for tool_call in message.tool_calls:
+                        function_name = tool_call.function.name
+                        arguments = json.loads(tool_call.function.arguments)
+
+                        step_log = f"第 {step_count} 步：调用 `{function_name}`  \n参数：`{arguments}`\n"
+                        full_reasoning += step_log
+                        reasoning_placeholder.markdown(full_reasoning)
+
+                        # 执行工具
+                        if function_name == "get_current_weather":
+                            result = get_current_weather(arguments["location"])
+                        elif function_name == "get_exchange_rate":
+                            rate = get_exchange_rate(arguments["from_currency"], arguments["to_currency"])
+                            result = f"1 {arguments['from_currency']} = {rate} {arguments['to_currency']}"
+                        else:
+                            result = "未知工具"
+
+                        # 将工具结果添加到消息历史
+                        messages.append({
+                            "role": "tool",
+                            "tool_call_id": tool_call.id,
+                            "content": result
+                        })
+                else:
+                    # 没有工具调用，任务完成
+                    final_answer = message.content
+                    break
+
+        return final_answer, full_reasoning
+
+
+    # --- 4. Web 界面交互 ---
+    with st.form("react_form"):
+        query = st.text_input("请输入您的任务", placeholder="例如：北京和上海哪个更热？或者 100元人民币能换多少美元？")
+        submitted = st.form_submit_button("开始执行")
+
+        if submitted and query:
+            final_answer, reasoning = run_react_agent(query)
+
+            with st.expander("查看 Agent 的思考与行动过程"):
+                st.markdown(reasoning)
+
+            st.success("任务完成")
+            st.markdown('<div class="result-card">' + final_answer.replace('\n', '<br>') + '</div>', unsafe_allow_html=True)
